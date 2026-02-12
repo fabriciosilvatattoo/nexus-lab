@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "8888:80"
+      - "8887:80" # FIX: Changed from 8888 (blocked) to 8887
     depends_on:
       - nexus-backend
     networks:
@@ -26,7 +26,7 @@ services:
 
 networks:
   nexus-network:
-    driver: bridge # FIX: Changed from 'overlay' to 'bridge' for standard docker compose
+    driver: bridge
 
 volumes:
   nexus_workspace:
