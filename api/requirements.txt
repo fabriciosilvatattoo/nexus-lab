@@ -6,3 +6,17 @@ gitpython
 python-dotenv
 pydantic
 zhipuai
+sniffio
+httpx
+tqdm
+typing-extensions
+anyio
+colorama
+distro
+h11
+httpcore
+idna
+msgpack
+soupsieve
+tomli
+urllib3
