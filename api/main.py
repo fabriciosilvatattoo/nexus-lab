@@ -1,14 +1,14 @@
 
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
-import requests
 import git
 from pathlib import Path
 from dotenv import load_dotenv
+from zhipuai import ZhipuAI # Biblioteca Oficial GLM
 
 # Carrega ambiente
 load_dotenv()
@@ -16,94 +16,84 @@ load_dotenv()
 app = FastAPI(title="NEXUS Agent API", version="1.0.0")
 
 # --- 1. CONFIGURAÇÃO GERAL ---
-# Onde o Agente vai trabalhar na VPS (Sandbox)
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "./workspace")
 ANTIGRAVITY_KIT_DIR = os.getenv("KIT_DIR", "./antigravity-kit")
-
-# Chave GLM (se não tiver no env, pega do argumento)
 GLM_API_KEY = os.getenv("GLM_API_KEY", "")
 
+# Verifica se a chave existe, senão avisa
+if not GLM_API_KEY:
+    print("⚠️  AVISO: GLM_API_KEY não encontrada no ambiente!")
+
+# Inicializa Cliente GLM
+client = ZhipuAI(api_key=GLM_API_KEY)
+
 # --- 2. INTEGRAÇÃO ANTIGRAVITY KIT ---
+def get_antigravity_context():
+    """Lê os arquivos essenciais do Kit para dar contexto ao Agente."""
+    context = ""
+    # Tenta ler o AGENTS.md se existir
+    try:
+        ag_path = Path(ANTIGRAVITY_KIT_DIR) / "AGENTS.md"
+        if ag_path.exists():
+            context += f"\n\n--- [CONTEXTO: AGENTS.md] ---\n{ag_path.read_text('utf-8')[:2000]}" # Limita a 2000 chars pra não estourar
+    except Exception as e:
+        print(f"Erro lendo contexto: {e}")
+    return context
+
 def sync_antigravity_kit():
-    """Baixa ou atualiza o Antigravity Kit do GitHub."""
     repo_url = "https://github.com/vudovn/antigravity-kit.git"
     if os.path.exists(ANTIGRAVITY_KIT_DIR):
-        print(f"🔄 Atualizando Kit em {ANTIGRAVITY_KIT_DIR}...")
         try:
             repo = git.Repo(ANTIGRAVITY_KIT_DIR)
             repo.remotes.origin.pull()
-        except Exception as e:
-            print(f"⚠️ Erro ao atualizar kit: {e}")
+        except: pass
     else:
-        print(f"📥 Clonando Kit para {ANTIGRAVITY_KIT_DIR}...")
-        git.Repo.clone_from(repo_url, ANTIGRAVITY_KIT_DIR)
+        try:
+            git.Repo.clone_from(repo_url, ANTIGRAVITY_KIT_DIR)
+        except: pass
 
-# Inicializa Kit ao subir
 sync_antigravity_kit()
 
-# --- 3. CÉREBRO DO AGENTE (GLM) ---
+# --- 3. CÉREBRO DO AGENTE (GLM REAL) ---
 class ChatMessage(BaseModel):
     role: str
     content: str
     
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
-    model: str = "glm-4-plus"
+    model: str = "glm-4-flash" # Modelo rápido e barato
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    """
-    Endpoint principal. Recebe mensagem do usuário, processa com o Kit
-    e retorna a resposta do Agente.
-    """
-    
-    # 1. Monta o Contexto do Sistema (System Prompt)
-    # Lendo o Agente Principal do Kit (ex: orchestrator ou o próprio antigravity)
+    if not GLM_API_KEY:
+        return {"reply": "⚠️ Erro: GLM_API_KEY não configurada no servidor (.env)."}
+
+    # 1. Monta System Prompt com Contexto do Kit
+    kit_context = get_antigravity_context()
     sys_prompt = "Você é o NEXUS, um agente de IA avançado vivendo na VPS do Fabrício.\n"
     sys_prompt += "Você tem acesso total a um ambiente de desenvolvimento (workspace).\n"
-    sys_prompt += "Sua missão é desenvolver apps, scripts e automações conforme solicitado.\n"
-    
-    # Injeta regras do Kit (exemplo simplificado - na real leríamos os arquivos .md)
-    try:
-        with open(f"{ANTIGRAVITY_KIT_DIR}/AGENTS.md", "r") as f:
-            sys_prompt += f"\n\n--- REGRAS DO ANTIGRAVITY KIT ---\n{f.read()}"
-    except:
-        pass
+    sys_prompt += "Seja direto, técnico quando necessário, e parceiro.\n"
+    sys_prompt += kit_context # Injeta o conhecimento do kit
 
-    # 2. Prepara mensagens para o GLM
+    # 2. Prepara histórico
     glm_messages = [{"role": "system", "content": sys_prompt}]
     for msg in request.messages:
         glm_messages.append(msg.dict())
 
-    # 3. Chama API do GLM
-    headers = {
-        "Authorization": f"Bearer {GLM_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    # Mockando chamada real por enquanto (precisamos da URL exata do GLM 4)
-    # response = requests.post("https://open.bigmodel.cn/api/paas/v4/chat/completions", ...)
-    
-    return {"reply": "Olá Fabrício! Sou o NEXUS. Já estou com o Antigravity Kit carregado na memória. O que vamos construir hoje?"}
+    try:
+        # 3. CHAMA A IA DE VERDADE
+        response = client.chat.completions.create(
+            model=request.model,
+            messages=glm_messages,
+            stream=False,
+        )
+        
+        reply_content = response.choices[0].message.content
+        return {"reply": reply_content}
 
-# --- 4. FERRAMENTAS DE DESENVOLVIMENTO (VPS) ---
-
-@app.post("/dev/create-file")
-async def create_file(path: str, content: str):
-    """Cria arquivos no workspace da VPS."""
-    full_path = Path(WORKSPACE_DIR) / path
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(full_path, "w") as f:
-        f.write(content)
-    return {"status": "created", "path": str(full_path)}
-
-@app.get("/dev/list-files")
-async def list_files(path: str = "."):
-    """Lista arquivos no workspace."""
-    full_path = Path(WORKSPACE_DIR) / path
-    if not full_path.exists():
-        return []
-    return [p.name for p in full_path.iterdir()]
+    except Exception as e:
+        print(f"Erro GLM: {e}")
+        return {"reply": f"⚠️ Erro ao processar no GLM: {str(e)}"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
