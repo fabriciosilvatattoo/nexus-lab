@@ -10,7 +10,7 @@ services:
     depends_on:
       - nexus-backend
     networks:
-      - nexus-net
+      - nexus-network
 
   nexus-backend:
     build:
@@ -22,11 +22,11 @@ services:
     volumes:
       - nexus_workspace:/app/workspace
     networks:
-      - nexus-net
+      - nexus-network
 
 networks:
-  nexus-net:
-    driver: overlay
+  nexus-network:
+    driver: bridge # FIX: Changed from 'overlay' to 'bridge' for standard docker compose
 
 volumes:
   nexus_workspace:
